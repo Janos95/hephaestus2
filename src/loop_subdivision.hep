@@ -1,0 +1,40 @@
+//// this is a comment
+//let b = true
+//if b
+//  // printing
+//  print("hello elisabeth")
+//else 
+//  print("hello janos")
+//end
+
+let mesh = load("bunny.obj")
+
+fn main(mesh : Mesh) -> Mesh
+  let is_new_vertex = mesh.add_attribute()
+  
+  // Split every edge of the mesh.
+  for e in mesh.edges() 
+    let p = e.midpoint()
+    let v = e.split(p)
+
+    @pause(0.1s)
+    @preview(mesh)
+
+    is_new_vertex[v] = true
+  end 
+  
+  // Flip any new edge that touches a new vertex and an old vertex.
+  for e in mesh.vertices() 
+    let is_new1 = is_new_vertex[e.endpoint1()]
+    let is_new2 = is_new_vertex[e.endpoint2()]
+    if is_new1 && !is_new2 || !is_new1 && is_new2
+      mesh.flip(e)
+
+      @pause(0.1s)
+      @preview mesh
+
+    end
+  end
+  
+  return mesh
+end

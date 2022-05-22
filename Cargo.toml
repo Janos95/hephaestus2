@@ -1,0 +1,13 @@
+[package]
+name = "hephaestus2"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+wgpu = { git = "https://github.com/gfx-rs/wgpu" }
+winit = "0.26"
+pollster = "0.2"
+env_logger = "0.9"
+enum-as-inner = "0.4"
