@@ -3,9 +3,17 @@
 
 use core::panic;
 
+use std::cell::RefCell;
 use std::str::Chars;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+use std::path::Path;
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::{self, prelude::*, BufReader};
+
+use std::ops;
 
 use enum_as_inner::EnumAsInner;
 
@@ -39,23 +47,166 @@ enum Token {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Edge {
+struct Vec3 {
+    x: f64,
+    y: f64,
+    z: f64,
+}
 
+impl Vec3 {
+    fn new(x: f64, y: f64, z: f64) -> Vec3 {
+        Vec3 { x, y, z }
+    }
+}
+
+impl ops::Add<Vec3> for Vec3 {
+    type Output = Vec3;
+
+    fn add(self, p: Vec3) -> Vec3 {
+        Vec3::new(self.x + p.x, self.y + p.y, self.z + p.z)
+    }
+}
+
+impl ops::Mul<Vec3> for Vec3 {
+    type Output = Vec3;
+
+    fn mul(self, p: Vec3) -> Vec3 {
+        Vec3::new(self.x * p.x, self.y * p.y, self.z * p.z)
+    }
+}
+
+impl ops::Div<Vec3> for Vec3 {
+    type Output = Vec3;
+
+    fn div(self, p: Vec3) -> Vec3 {
+        Vec3::new(self.x / p.x, self.y / p.y, self.z / p.z)
+    }
+}
+
+impl ops::Sub<Vec3> for Vec3 {
+    type Output = Vec3;
+
+    fn sub(self, p: Vec3) -> Vec3 {
+        Vec3::new(self.x - p.x, self.y - p.y, self.z - p.z)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Face {
+    id : usize,
+    mesh : MeshObject,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Edge {
+    id : usize,
+    mesh : MeshObject,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Vertex {
+    id : usize,
+    mesh : MeshObject,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Halfedge {
+    id : usize,
+    mesh : MeshObject,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct Mesh {
 
+    halfedges : Vec<u32>,
+    face_halfedge : Vec<u32>,
+    vertex_halfedge : Vec<u32>,
+
+    points : Vec<Vec3>,
+}
+
+type MeshObject = Rc<RefCell<Mesh>>;
+
+fn get_extension_from_filename(filename: &str) -> Option<&str> {
+    Path::new(filename)
+        .extension()
+        .and_then(OsStr::to_str)
 }
 
 impl Mesh {
-    fn flip(&mut self, e : Edge) {
+    fn new() -> Mesh {
+        Mesh {
+            halfedges : Vec::new(),
+            face_halfedge : Vec::new(),
+            vertex_halfedge : Vec::new(),
+            points : Vec::new(),
+        }
+    }
+
+    fn new_shared() -> MeshObject {
+        Rc::new(RefCell::new(Mesh::new()))
+    }
+    
+    fn load(path : &str) -> Result<MeshObject, io::Error> {
+
+        if get_extension_from_filename(path) == Some("obj") {
+            let file = File::open(path)?;
+            let reader = BufReader::new(file);
+            let mesh = Mesh::new_shared();
+            for line in reader.lines() {
+                let line = line?;
+                let mut items = line.split_whitespace();
+                match items.next() {
+                    Some("v") => {
+                        let x = items.next().unwrap().parse::<f64>().unwrap();
+                        let y = items.next().unwrap().parse::<f64>().unwrap();
+                        let z = items.next().unwrap().parse::<f64>().unwrap();
+                        mesh.borrow_mut().add_vertex(mesh.clone(), Vec3::new(x, y, z));
+                    },
+                    Some("f") => {
+                        let i1 = items.next().unwrap().parse::<usize>().unwrap();
+                        let i2 = items.next().unwrap().parse::<usize>().unwrap();
+                        let i3 = items.next().unwrap().parse::<usize>().unwrap();
+                        let vs = [Vertex { id : i1 - 1, mesh : Rc::clone(&mesh) },
+                                  Vertex { id : i2 - 1, mesh : Rc::clone(&mesh) },
+                                  Vertex { id : i3 - 1, mesh : Rc::clone(&mesh) }];
+                        mesh.borrow_mut().add_face(mesh.clone(), &vs);
+                    },
+                    _ => (),
+                }
+            }
+            println!("Loaded mesh with {} vertices and {} faces", mesh.borrow().num_vertices(), mesh.borrow().num_faces());
+            return Ok(mesh);
+        }
+
+        Err(io::Error::new(io::ErrorKind::Other, "Unsupported file type"))
+    }
+
+    fn add_face(&mut self, mesh : MeshObject, vs : &[Vertex]) -> Face {
+        let id = self.face_halfedge.len();
+        self.face_halfedge.push(0);
+        Face { id : id, mesh : mesh }
+    }
+
+    fn add_vertex(&mut self, mesh : MeshObject, p : Vec3) -> Vertex {
+        let id = self.points.len();
+        self.points.push(p);
+        Vertex {
+            id,
+            mesh : mesh, 
+        }
+    }
+
+    fn flip(&mut self, e : &Edge) {
 
     }
 
-    fn load(path : &str) -> Option<Mesh> {
-        println!("Loading mesh from {}", path);
-        Some(Mesh{})
+    fn num_vertices(&self) -> usize {
+        self.points.len()
+    }
+
+    fn num_faces(&self) -> usize {
+        self.face_halfedge.len()
     }
 }
 
@@ -92,7 +243,7 @@ enum Value {
   Int(i64),
   Bool(bool),
   String(String),
-  Mesh(Mesh),
+  Mesh(MeshObject),
   Edge(Edge),
   //Object(Rc<dyn Object>)
 }
@@ -727,8 +878,10 @@ struct Program {
 fn load_mesh(env : &Environment) -> Option<Value> {
     let ice_error = "ICE: load_mesh called incorrectly";
     let path = env.get_value("path").expect(ice_error).as_string().expect(ice_error);
-    let mesh = Mesh::load(path);
-    mesh.map(|m| Value::Mesh(m))
+    if let Ok(mesh) = Mesh::load(path) {
+        return Some(Value::Mesh(mesh));
+    }
+    None
 }
 
 impl Program {
@@ -741,7 +894,7 @@ impl Program {
     }
 
     fn run (&mut self) {
-        let input = "bunny.obj".to_string();
+        let input = "/Users/janos/hephaestus2/src/bunny.obj".to_string();
         let func_def = self.env.get_function("main");
         let call_main = FunctionCallNode {
             func_name : "main".to_string(),
