@@ -1,9 +1,9 @@
 #![allow(dead_code)]
-
+#![allow(unused_variables)]
 
 use core::panic;
-use std::str::Chars;
 
+use std::str::Chars;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -38,41 +38,12 @@ enum Token {
     TypeIdentifier(Type),
 }
 
-//struct FunctionSignature {
-//  arguments : Vec<Type>,
-//  ret : Type,
-//}
-//
-//impl FunctionSignature {
-//    fn new (args : &[Type], ret : Type) -> Function {
-//        FunctionSignature{arguments : args, ret : ret}
-//    }
-//}
-//
-//struct Function {
-//  name : String,
-//  signature : FunctionSignature,
-//}
-//
-//impl Function {
-//    fn new (name : &str, args : &[Type], ret : Type) -> Function {
-//        Function{name : name, signature : FunctionSignature::new(args, ret)}
-//    }
-//}
-
-//trait Object {
-//  fn name() -> &'static str;
-//
-//  fn get_methods(&self) -> Vec<Function>;
-//
-//  fn call_method(&mut self, name : &str, args : &[Value]) -> Option<Value>;
-//}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Edge {
 
 }
 
+#[derive(Debug, Clone, PartialEq)]
 struct Mesh {
 
 }
@@ -80,6 +51,11 @@ struct Mesh {
 impl Mesh {
     fn flip(&mut self, e : Edge) {
 
+    }
+
+    fn load(path : &str) -> Option<Mesh> {
+        println!("Loading mesh from {}", path);
+        Some(Mesh{})
     }
 }
 
@@ -115,7 +91,8 @@ enum Value {
   Real(f64),
   Int(i64),
   Bool(bool),
-  Str(String),
+  String(String),
+  Mesh(Mesh),
   Edge(Edge),
   //Object(Rc<dyn Object>)
 }
@@ -269,16 +246,11 @@ impl<'a> Tokenizer<'a> {
   }
 }
 
-struct Function {
-    arg_names : Vec<String>,
-    body : Node,
-}
-
 struct Environment {
     global_values : HashMap<String, Value>,
     scoped_values : Vec<HashMap<String, Value>>,
 
-    functions : HashMap<String, Function>,
+    functions : HashMap<String, Rc<FunctionDefNode>>,
 }
 
 impl Environment {
@@ -290,11 +262,11 @@ impl Environment {
         }
     }
 
-    fn add_function(&mut self, name : String, func : Function) -> Option<Function> {
-        self.functions.insert(name, func)
+    fn add_function(&mut self, name : String, func_def : Rc<FunctionDefNode>) -> Option<Rc<FunctionDefNode>> {
+        self.functions.insert(name, func_def)
     }
 
-    fn get_function(&self, name : &str) -> Option<&Function> {
+    fn get_function(&self, name : &str) -> Option<&Rc<FunctionDefNode>> {
         self.functions.get(name)
     }
 
@@ -321,8 +293,10 @@ impl Environment {
     }
 }
 
-trait AstNode {
+trait AstNode  {
     fn evaluate(&self, env : &mut Environment) -> Option<Value>;
+
+    fn children(&self) -> Vec<Rc<dyn AstNode>>;
 }
 
 type Node = Rc<dyn AstNode>;
@@ -360,6 +334,7 @@ struct LetNode {
 
 struct FunctionDefNode {
     name : String,
+    arguments : Vec<(String, Type)>,
     body : Node,
 }
 
@@ -368,23 +343,51 @@ struct FunctionCallNode {
     arguments : Vec<Node>,
 }
 
+struct BuiltinNode {
+    function : Box<dyn Fn(&Environment) -> Option<Value>>,
+}
+
 struct ReturnNode {
     return_value : Option<Node>,
 }
 
+impl AstNode for BuiltinNode {
+    fn evaluate(&self, env : &mut Environment) -> Option<Value> {
+        (self.function)(env)
+    }
+
+    fn children(&self) -> Vec<Rc<dyn AstNode>> {
+        vec![]
+    }
+}
+
 impl AstNode for FunctionCallNode {
     fn evaluate(&self, env : &mut Environment) -> Option<Value> {
-        env.push_scope();
-        let arg_names = env.get_function(&self.func_name).unwrap().arg_names.clone();
-        for (arg, arg_name) in self.arguments.iter().zip(arg_names.into_iter()) {
-            let arg_value = arg.evaluate(env).expect("Argument expression must evaluate to a value");
-            env.set_value(arg_name, arg_value).expect("Argument name must be unique");
+        let msg = format!("Function {} not found", self.func_name);
+        let func_def = env.get_function(&self.func_name).expect(msg.as_str()).clone();
+        let arg_decl = &func_def.arguments;
+
+        let mut args = Vec::with_capacity(arg_decl.len());
+
+        // Evaluate the argument expressions in the current scope
+        for (arg_node, (arg_name, _)) in self.arguments.iter().zip(arg_decl.iter()) {
+            let value = arg_node.evaluate(env).expect("Argument expression must evaluate to a value");
+            args.push((arg_name.clone(), value));
         }
 
-        let body = env.get_function(&self.func_name).expect("Calling unkown function").body.clone();
-        let result = body.evaluate(env);
+        // Push arguments into to new scope and call the functions body
+        env.push_scope();
+        for (name, value) in args {
+            let old = env.set_value(name, value);
+            assert!(old.is_none(), "Argument name must be unique");
+        }
+        let result = func_def.evaluate(env);
         env.pop_scope();
         result
+    }
+
+    fn children(&self) -> Vec<Node> {
+        self.arguments.clone()
     }
 }
 
@@ -395,12 +398,23 @@ impl AstNode for ReturnNode {
             None => None,
         }
     }
+
+    fn children(&self) -> Vec<Node> {
+        match self.return_value {
+            Some(ref node) => vec![node.clone()],
+            None => vec![],
+        }
+    } 
 }
 
 impl AstNode for FunctionDefNode {
     fn evaluate(&self, env : &mut Environment) -> Option<Value> {
-        None
+        self.body.evaluate(env)
     }
+
+    fn children(&self) -> Vec<Node> {
+        vec![self.body.clone()]
+    } 
 }
 
 impl AstNode for LetNode {
@@ -410,18 +424,31 @@ impl AstNode for LetNode {
         assert!(o.is_none(), "variable redeclaration");
         None
     }
+
+    fn children(&self) -> Vec<Node> {
+        vec![self.expression.clone()]
+    } 
 }
 
 impl AstNode for ConstantNode {
     fn evaluate(&self, env : &mut Environment) -> Option<Value> {
         Some(self.value.clone())
     }
+
+    fn children(&self) -> Vec<Node> {
+        vec![]
+    } 
 }
 
 impl AstNode for IdentifierNode {
     fn evaluate(&self, env : &mut Environment) -> Option<Value> {
-        Some(env.get_value(&self.name).expect("variable not in scope").clone())
+        let msg = format!("Identifier {} not found", self.name);
+        Some(env.get_value(&self.name).expect(msg.as_str()).clone())
     }
+
+    fn children(&self) -> Vec<Node> {
+        vec![]
+    } 
 }
 
 impl AstNode for IfNode {
@@ -439,19 +466,30 @@ impl AstNode for IfNode {
             _ => panic!("If condition must be a boolean"),
         }
     }
+
+    fn children(&self) -> Vec<Node> {
+        match &self.alternate {
+            Some(alt) => vec![self.condition.clone(), self.consequent.clone(), alt.clone()],
+            None => vec![self.condition.clone(), self.consequent.clone()],
+        }
+    }
 }
 
 impl AstNode for PrintNode {
     fn evaluate(&self, env : &mut Environment) -> Option<Value> {
         let v = self.expr.evaluate(env).unwrap();
         match v {
-          Value::Str(s) => println!("{}", s),
+          Value::String(s) => println!("{}", s),
           Value::Real(r) => println!("{}", r),
           Value::Int(i) => println!("{}", i),
           _ => println!("TODO: not printable")
         }
         None
     }
+
+    fn children(&self) -> Vec<Node> {
+        vec![self.expr.clone()]
+    } 
 }
 
 impl AstNode for BlockNode {
@@ -461,12 +499,20 @@ impl AstNode for BlockNode {
         }
         None
     }
+
+    fn children(&self) -> Vec<Node> {
+        self.statements.clone()
+    } 
 }
 
 impl AstNode for StringLiteralNode {
     fn evaluate(&self, env : &mut Environment) -> Option<Value> {
-        Some(Value::Str(self.value.clone()))
+        Some(Value::String(self.value.clone()))
     }
+
+    fn children(&self) -> Vec<Node> {
+        vec![]
+    } 
 }
 
 struct Parser {
@@ -474,7 +520,7 @@ struct Parser {
   idx : i64,
 
   env : Environment,
-  entry_point : Option<Rc<dyn AstNode>>,
+  entry_point : Option<Node>,
 }
 
 fn tokenize(input : &str) -> Vec<Token> {
@@ -539,10 +585,10 @@ impl Parser {
                             loop {
                                 let (t1,t2,t3) = (self.next(), self.next(), self.next());
                                 match (t1, t2, t3) {
-                                    (Some(Token::TypeIdentifier(type_id)), Some(Token::Colon), Some(Token::Identifier(arg_name))) => {
-                                        args.push(arg_name);
+                                    (Some(Token::Identifier(arg_name)), Some(Token::Colon), Some(Token::TypeIdentifier(type_id))) => {
+                                        args.push((arg_name, type_id));
                                     },
-                                    (Some(Token::RightParen), _, _) => {
+                                    (Some(Token::RightParen), Some(Token::Arrow), Some(Token::TypeIdentifier(_))) => {
                                         break;
                                     },
                                     (_, _, _) => panic!("Expected type identifier, colon, and identifier"),
@@ -553,20 +599,20 @@ impl Parser {
                             let is_entry_point = name == "main";
                             let func_node = Rc::new(FunctionDefNode {
                                 name : name.clone(),
-                                body : body,
+                                arguments : args,
+                                body : body.clone(),
                             });
                             if is_entry_point {
                                 self.entry_point = Some(func_node.clone());
                             }
-                            self.env.add_function(name, Function{arg_names : args, body : func_node.clone()});
-                            return Some(func_node);
+                            self.env.add_function(name, func_node.clone());
+                            return Some(func_node as Node);
                         },
                         _ => panic!("Expected variable name"),
                     }
                 }
                 Token::Return => {
                     let expr = self.parse_expression();
-                    self.expect(Token::End);
                     return Some(Rc::new(ReturnNode { return_value : Some(expr) }));
                 },
                 // these tokens end a block
@@ -584,19 +630,19 @@ impl Parser {
     }
 
     fn next(&mut self) -> Option<Token> {
-        if self.idx >= self.tokens.len() as i64 {
-            return None;
-        }
         let idx = self.idx as usize;
         self.idx = self.idx + 1;
+        if idx >= self.tokens.len() {
+            return None;
+        }
         Some(self.tokens[idx].clone()) // Instead of cloning could use a ref
     }
 
     fn peek(&mut self) -> Option<Token> {
-        if self.idx >= self.tokens.len() as i64 {
+        let idx = self.idx as usize;
+        if idx >= self.tokens.len() {
             return None;
         }
-        let idx = self.idx as usize;
         Some(self.tokens[idx].clone()) // Instead of cloning could use a ref
     }
 
@@ -621,12 +667,15 @@ impl Parser {
                         self.expect(Token::LeftParen);
                         let mut args = vec![];
                         loop {
-                            let expr = self.parse_expression();
-                            args.push(expr);
+                            // TODO: This currently would allow for things like "foo(1,,2 3)". Should make
+                            // this more strict at some point.
                             match self.next() {
                                 Some(Token::RightParen) => break,
                                 Some(Token::Comma) => (),
-                                _ => panic!("Expected either right paren or comma"),
+                                _ => { // try to parse argument expression
+                                    self.go_back();
+                                    args.push(self.parse_expression());
+                                },
                             }
                         }
                         return Rc::new(FunctionCallNode {
@@ -670,20 +719,48 @@ impl Parser {
 }
 
 struct Program {
-    root : Rc<dyn AstNode>,
-    entry_point : Rc<dyn AstNode>,
+    root : Node,
+    entry_point : Node,
     env : Environment,
+}
+
+fn load_mesh(env : &Environment) -> Option<Value> {
+    let ice_error = "ICE: load_mesh called incorrectly";
+    let path = env.get_value("path").expect(ice_error).as_string().expect(ice_error);
+    let mesh = Mesh::load(path);
+    mesh.map(|m| Value::Mesh(m))
 }
 
 impl Program {
     fn new(script : &str) -> Program {
         let mut parser = Parser::new(script);
         let root = parser.parse_block();
-        Program{root : root, entry_point : parser.entry_point.unwrap(), env : parser.env}
+        let mut program = Program{root : root, entry_point : parser.entry_point.unwrap(), env : parser.env};
+        program.register_builtins();
+        program
     }
 
     fn run (&mut self) {
-        self.entry_point.evaluate(&mut self.env);
+        let input = "bunny.obj".to_string();
+        let func_def = self.env.get_function("main");
+        let call_main = FunctionCallNode {
+            func_name : "main".to_string(),
+            arguments : vec![Rc::new(ConstantNode{value : Value::String(input)})],
+        };
+        call_main.evaluate(&mut self.env);
+    }
+
+    fn register_builtins(&mut self) {
+        // load_mesh
+        {
+            let function = Box::new(load_mesh);
+            let func_def = Rc::new(FunctionDefNode {
+                name : "load_mesh".to_string(),
+                arguments : vec![("path".to_string(), Type::String)],
+                body : Rc::new(BuiltinNode{function : function}),
+            });
+            self.env.add_function("load_mesh".to_string(), func_def);
+        }
     }
 }
 
@@ -697,5 +774,6 @@ fn main() {
 
   let mut program = Program::new(script);
   program.run();
+
 }
 

@@ -1,5 +1,3 @@
-//fn main(path : String) -> Mesh 
-fn main() -> Mesh 
-  //load_mesh(path)
-  return load_mesh()
+fn main(path : String) -> Mesh 
+  return load_mesh(path)
 end
