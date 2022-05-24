@@ -13,7 +13,7 @@ fn main(mesh : Mesh) -> Mesh
   // Split every edge of the mesh.
   for e in mesh.edges() 
     let p = e.midpoint()
-    let v = e.split(p)
+    let v = mesh.set_point(mesh.split(e), p)
 
     @pause(0.1s)
     @preview(mesh)
