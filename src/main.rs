@@ -722,7 +722,7 @@ impl Program {
 }
 
 fn main() {
-  let script = include_str!("import_mesh.hep");
+  let script = include_str!("../samples/import_mesh.hep");
 
   //let mut tokenizer = Tokenizer::new(script);
   //while let Some(token) = tokenizer.next() {

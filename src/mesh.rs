@@ -2,10 +2,13 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+
+//use core::slice::SlicePattern;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, prelude::*, BufReader};
@@ -67,6 +70,26 @@ pub struct Face {
 impl Face {
     fn new(id: usize, mesh: RcMesh) -> Face {
         Face { id, mesh }
+    }
+
+    fn halfedge(&self) -> Halfedge {
+        let id = self.mesh.data.borrow().face_halfedge[self.id] as usize;
+        Halfedge { id, mesh: self.mesh.clone() }
+    }
+
+    fn is_boundary(&self) -> bool {
+        let begin = self.halfedge();
+        let mut he = begin.clone();
+        loop {
+            if he.twin().is_boundary() {
+                return true;
+            }
+            he = he.next();
+            if he == begin {
+                break;
+            }
+        }
+        false
     }
 }
 
@@ -267,6 +290,33 @@ fn find_free_gap(he : Halfedge) -> Halfedge {
     }
 }
 
+fn parse_vertex(items : &mut std::str::SplitWhitespace) -> Result<usize, io::Error> {
+    if let Some(item) = items.next()  {
+        let mut end = item.len();
+        if let Some(n) = item.find('/') {
+            end = n;
+        }
+        let id = item[..end].parse::<usize>();
+        if let Ok(id) = id {
+            return Ok(id);
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::InvalidData, "Cannot parse face: invalid vertex format"))
+}
+
+fn try_add_face(mesh : &RcMesh, items : &mut std::str::SplitWhitespace) -> Result<(), io::Error> {
+    let i1 = parse_vertex(items)?;
+    let i2 = parse_vertex(items)?;
+    let i3 = parse_vertex(items)?;
+    let face = [Vertex { id : i1 - 1, mesh : mesh.clone() },
+                            Vertex { id : i2 - 1, mesh : mesh.clone() },
+                            Vertex { id : i3 - 1, mesh : mesh.clone() }];
+    println!("Adding face {} {} {}", face[0].id, face[1].id, face[2].id);
+    mesh.add_face(&face).unwrap();
+
+    Ok(())
+}
+
 impl Mesh {
     fn new() -> Mesh {
         Mesh { data : RefCell::new(MeshData::new()) }
@@ -282,7 +332,6 @@ impl Mesh {
             let file = File::open(path)?;
             let reader = BufReader::new(file);
             let mesh = Mesh::new_shared();
-            let mut faces = Vec::new();
             for line in reader.lines() {
                 let line = line?;
                 let mut items = line.split_whitespace();
@@ -294,23 +343,10 @@ impl Mesh {
                         mesh.add_vertex(Vec3::new(x, y, z));
                     },
                     Some("f") => {
-                        let i1 = items.next().unwrap().parse::<usize>().unwrap();
-                        let i2 = items.next().unwrap().parse::<usize>().unwrap();
-                        let i3 = items.next().unwrap().parse::<usize>().unwrap();
-                        let vs = [Vertex { id : i1 - 1, mesh : mesh.clone() },
-                                  Vertex { id : i2 - 1, mesh : mesh.clone() },
-                                  Vertex { id : i3 - 1, mesh : mesh.clone() }];
-                        faces.push(vs);
+                       try_add_face(&mesh, &mut items)?;
                     },
                     _ => (),
                 }
-            }
-
-            let mut count = 0;
-            for face in faces {
-                println!("face {}", count);
-                mesh.add_face(&face).unwrap();
-                count += 1;
             }
 
             println!("Loaded mesh with {} vertices and {} faces", mesh.num_vertices(), mesh.num_faces());
@@ -474,12 +510,22 @@ impl Mesh {
     }
 
     fn num_vertices(&self) -> usize {
-        self.data.borrow().points.len()
+        self.data.borrow().vertex_halfedge.len()
     }
 
     fn num_faces(&self) -> usize {
         self.data.borrow().face_halfedge.len()
     }
+
+    fn num_edges(&self) -> usize {
+        self.data.borrow().halfedge_vertex.len() / 2
+    }
+
+    fn num_halfedges(&self) -> usize {
+        self.data.borrow().halfedge_vertex.len() 
+    }
+
+    // Low level routines
 
     fn new_edge(self : &Rc<Self>, v1 : &Vertex, v2 : &Vertex) -> Halfedge {
         let mut data = self.data.borrow_mut();
@@ -528,4 +574,79 @@ impl Mesh {
             }
         }
     }
+}
+
+#[test]
+fn load_cube() {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("assets/cube.obj");
+    let mesh = Mesh::load(path.to_str().unwrap()).expect("Failed to load cube.obj");
+    assert_eq!(mesh.num_vertices(), 8);
+    assert_eq!(mesh.num_faces(), 12);
+    assert_eq!(mesh.num_edges(), 18);
+}
+
+#[test]
+fn load_cube_degenerate() {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("assets/cube-degenerate.obj");
+    let mesh = Mesh::load(path.to_str().unwrap()).expect("Failed to load cube.obj");
+    assert_eq!(mesh.num_vertices(), 8);
+    assert_eq!(mesh.num_faces(), 12);
+    assert_eq!(mesh.num_edges(), 18);
+}
+
+#[test]
+fn test_boundary() {
+    // Add some vertices
+    let mesh = Mesh::new_shared();
+
+    let vs = [
+    mesh.add_vertex(Vec3::new(0., 1., 0.)),
+    mesh.add_vertex(Vec3::new(1., 0., 0.)),
+    mesh.add_vertex(Vec3::new(2., 1., 0.)),
+    mesh.add_vertex(Vec3::new(0.,-1., 0.)),
+    mesh.add_vertex(Vec3::new(2.,-1., 0.)),
+    mesh.add_vertex(Vec3::new(3., 0., 0.)),
+
+    // Single point
+    mesh.add_vertex(Vec3::new(0.,-2., 0.))];
+
+    // Add two faces
+    let faces = [
+    mesh.add_face(&[vs[0].clone(), vs[1].clone(), vs[2].clone()]).unwrap(),
+    mesh.add_face(&[vs[1].clone(), vs[3].clone(), vs[4].clone()]).unwrap(),
+    mesh.add_face(&[vs[0].clone(), vs[3].clone(), vs[1].clone()]).unwrap(),
+    mesh.add_face(&[vs[2].clone(), vs[1].clone(), vs[4].clone()]).unwrap(),
+    mesh.add_face(&[vs[5].clone(), vs[2].clone(), vs[4].clone()]).unwrap()];
+
+
+    /* Test setup:
+        0 ==== 2
+        |\  0 /|\
+        | \  / | \
+        |2  1 3|4 5
+        | /  \ | /
+        |/  1 \|/
+        3 ==== 4
+
+        Vertex 6 single
+        */
+
+
+    // Check for boundary vertices
+    assert! ( vs[0].is_boundary()  ,"Vertex 0 is not boundary!");
+    assert!( !vs[1].is_boundary()  , "Vertex 1 is boundary!");
+    assert! ( vs[2].is_boundary()  , "Vertex 2 is not boundary!");
+    assert! ( vs[3].is_boundary()  , "Vertex 3 is not boundary!");
+    assert! ( vs[4].is_boundary()  , "Vertex 4 is not boundary!");
+    assert! ( vs[5].is_boundary()  , "Vertex 5 is not boundary!");
+    assert! ( vs[6].is_boundary()  , "Singular Vertex 6 is not boundary!");
+
+    // Check the boundary faces
+    assert! ( faces[0].is_boundary() , "Face 0 is not boundary!");
+    assert! ( faces[1].is_boundary() , "Face 1 is not boundary!");
+    assert! ( faces[2].is_boundary() , "Face 2 is not boundary!");
+    assert!( !faces[3].is_boundary() , "Face 3 is boundary!");
+    assert! ( faces[4].is_boundary() , "Face 4 is not boundary!");
 }
