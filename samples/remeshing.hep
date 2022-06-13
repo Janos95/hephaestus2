@@ -1,0 +1,63 @@
+
+fn neighborhood_center(v : Vertex) -> vec3 
+    let center = vec3(0)
+    for w in v.adjacent_vertices() 
+        center += w.point()
+    end
+    return center / v.valence()
+end
+
+
+
+fn main(mesh : Mesh, target_length : real, num_iterations : int) -> Mesh
+    for i in 0..num_iterations 
+        // Split long edges
+        for e in mesh.edges() 
+            let l = e.length()
+            if l > 4./3. * target_length 
+                mesh.midpoint_split()
+            end
+        end
+
+        // Collapse small edges
+        for e in mesh.edges() 
+            let l = e.length()
+            if l < 4./5. * target_length && e.is_collapse_ok()
+                mesh.collapse(e)
+            end
+        end
+
+        // Flip edges if it improves the connectivity
+        for e in mesh.edges() 
+            let a1 = e.endpoint1().valence()
+            let a2 = e.endpoint2().valence()
+
+            let he = e.halfedge()
+            let op = he.twin()
+            let b1 = he.next().to().valence()
+            let b2 = op.next().to().valence()
+
+            let current_cost = |a1-6| + |a2-6| + |b1-6| + |b2-6|
+            let new_cost = |a1-1-6| + |a2-1-6| + |b1+1-6| + |b2+1-6|
+            if new_cost < current_cost && e.is_flip_ok() 
+                mesh.flip(e)
+            end
+        end
+
+        // Vertex smoothing
+        let damping = 0.2
+        let new_positions = VertexAttribute(mesh)
+        for v in mesh.vertices() 
+            let p = v.point()
+            let c = neighborhood_center
+            let n = v.normal()
+            let q = c - dot(n, c) * n
+            new_positions[v] = p + damping * (q - p)
+        end
+
+        for v in mesh.vertices()
+            mesh.set_point(v, new_positions[v])
+        end
+    end
+    return mesh
+end

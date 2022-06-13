@@ -1,12 +1,3 @@
-//// this is a comment
-//let b = true
-//if b
-//  // printing
-//  print("hello elisabeth")
-//else 
-//  print("hello janos")
-//end
-
 fn main(mesh : Mesh) -> Mesh
   let is_new_vertex = VertexAttribute(mesh)
   
